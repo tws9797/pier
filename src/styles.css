@@ -717,11 +717,13 @@ button:disabled {
   margin-bottom: 10px;
 }
 
+/* The page scrolls across the full width, so its scrollbar sits at the window
+   edge; only the text column inside is kept narrow. */
 .settings {
   padding: 8px 20px 24px;
-  max-width: 640px;
 }
 .settings section {
+  max-width: 600px;
   padding: 18px 0;
   border-bottom: 1px solid var(--border);
 }
