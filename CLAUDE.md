@@ -20,6 +20,21 @@ buttons). With Docker Desktop closed, the systemd distro shut down about
 The `login -- user` processes WSL keeps in a systemd distro do not hold it
 up; Docker Desktop's integration proxy does.
 
+Pier never stops Docker by itself: going to sleep only lets go of Pier's
+own session (`release_asleep` in engine.rs says why). Idle detection that
+decides when to stop dockerd was tried in three forms and each left a
+window in which a `docker build` or `docker pull` run inside the distro was
+cut off; do not bring it back. Run for real on Ubuntu (systemd): a native
+`docker pull` and a native `docker events` each ran across the moment Pier
+went to sleep, untouched, and the distro shut down by itself afterwards.
+On a distro without systemd dockerd keeps the distro up, so sleep gives no
+memory back there until Stop is pressed; that case has not been run since
+the change.
+
+When testing sleep with a hidden Pier, make sure the distro is up before
+Pier starts: started against a stopped distro it attaches to nothing and
+"holds 0 wsl.exe" then looks like sleep.
+
 Still only covered by unit tests with a stand-in backend (src-tauri/src/engine.rs):
 two real distros at once (switching, background keep-alive), a Docker that
 hangs. Clicking the tray icon was only simulated.
@@ -45,6 +60,8 @@ WSL produces a Linux app that cannot call `wsl.exe` the same way.
   has a demo fallback in `src/demo.ts`; keep them in step.
 - Prefer the generic `docker_api` pass-through over new Rust commands. Add
   Rust only for streaming, WSL control or Windows integration.
+- Pier does not stop Docker unless the user presses Stop. Nothing on a
+  timer and no idle rule may stop dockerd or shut a distro down.
 - Nothing that runs on a timer may boot a stopped distro. Check
   `wsl::running()` or the `engine_up` flag first.
 - Every `wsl.exe` spawn goes through `wsl()` in wsl.rs (sets CREATE_NO_WINDOW

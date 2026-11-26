@@ -28,12 +28,16 @@ type Run = (action: () => Promise<unknown>) => Promise<void>;
 
 /** Starts a pull. `run` shows the reason if it fails and reloads the lists either way. */
 function start(distro: string, image: string, run: Run) {
-  // Until Docker has accepted the name there is nothing to cancel yet.
-  set({ distro, image, progress: null, cancel: () => {} });
+  // The backend hands back the means to cancel at once, before Docker or the
+  // registry has answered. A Cancel pressed in the instant before that is
+  // remembered and carried out when it arrives.
+  let cancelled = false;
+  set({ distro, image, progress: null, cancel: () => void (cancelled = true) });
   return run(async () => {
     try {
       const pull = await api.pullImage(distro, image, (progress) => running && set({ ...running, progress }));
-      if (running) set({ ...running, cancel: pull.cancel });
+      if (cancelled) pull.cancel();
+      else if (running) set({ ...running, cancel: pull.cancel });
       await pull.finished;
     } catch (e) {
       // Stopping it was the user's doing; there is nothing to report.

@@ -234,10 +234,12 @@ export function pullImage(distro: string, image: string, onProgress: (p: PullPro
 }
 let cancelPull = () => {};
 
-let context: DockerContext = { cli: true, current: "desktop-linux", active: false };
+let context: DockerContext = { cli: true, current: "my-server", active: false, previous: null };
 export const dockerContext = () => wait(context);
 export const setDockerContext = (pier: boolean) => {
-  context = { cli: true, current: pier ? "pier" : "desktop-linux", active: pier };
+  context = pier
+    ? { cli: true, current: "pier", active: true, previous: context.active ? context.previous : context.current }
+    : { cli: true, current: context.previous ?? "default", active: false, previous: null };
   return wait(context);
 };
 

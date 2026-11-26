@@ -6,6 +6,7 @@
 //! context would be for.
 
 use serde::Serialize;
+use std::path::Path;
 use std::time::Duration;
 
 const NAME: &str = "pier";
@@ -19,6 +20,9 @@ pub struct State {
     current: Option<String>,
     /// That context is Pier's.
     active: bool,
+    /// While Pier's is in use: the one that was in use before, which
+    /// switching back returns to.
+    previous: Option<String>,
 }
 
 enum Failure {
@@ -54,17 +58,41 @@ async fn docker(args: &[&str]) -> Result<String, Failure> {
     }
 }
 
-pub async fn state() -> State {
+/// `note` is the file that remembers which context was in use before Pier's.
+pub async fn state(note: &Path) -> State {
     match docker(&["context", "show"]).await {
-        Ok(current) => State { cli: true, active: current == NAME, current: Some(current) },
-        Err(Failure::Missing) => State { cli: false, current: None, active: false },
-        Err(Failure::Said(_)) => State { cli: true, current: None, active: false },
+        Ok(current) => {
+            let active = current == NAME;
+            State { cli: true, active, current: Some(current), previous: remembered(note).filter(|_| active) }
+        }
+        Err(Failure::Missing) => State { cli: false, current: None, active: false, previous: None },
+        Err(Failure::Said(_)) => State { cli: true, current: None, active: false, previous: None },
     }
 }
 
+fn remembered(note: &Path) -> Option<String> {
+    let name = std::fs::read_to_string(note).ok()?.trim().to_string();
+    (!name.is_empty() && name != NAME).then_some(name)
+}
+
+/// Where `leave` goes: the context remembered when Pier's was selected, if
+/// the CLI still has it, else the CLI's built-in `default`.
+fn way_back(remembered: Option<String>, existing: &str) -> String {
+    remembered.filter(|name| existing.lines().any(|n| n.trim() == name)).unwrap_or_else(|| "default".into())
+}
+
 /// Makes the `pier` context lead to `host` (creating it, or correcting one
-/// left by an older version) and selects it.
-pub async fn use_pier(host: &str) -> Result<(), String> {
+/// left by an older version) and selects it, remembering in `note` which
+/// context was in use until now.
+pub async fn use_pier(host: &str, note: &Path) -> Result<(), String> {
+    let before = docker(&["context", "show"]).await?;
+    if before != NAME {
+        // Written first: a switch that cannot be undone later is not made.
+        if let Some(dir) = note.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(note, &before).map_err(|e| format!("Could not save settings to {}: {e}", note.display()))?;
+    }
     let endpoint = format!("host={host}");
     match docker(&["context", "inspect", NAME, "--format", "{{.Endpoints.docker.Host}}"]).await {
         Ok(existing) if existing == host => {}
@@ -80,12 +108,39 @@ pub async fn use_pier(host: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Selects what docker commands used before Pier: Docker Desktop's context
-/// if there is one, else the CLI's built-in default. The `pier` context is
-/// left in place for `--context pier`.
-pub async fn leave() -> Result<(), String> {
+/// Selects the context docker commands used before Pier's was selected (see
+/// `way_back`). The `pier` context is left in place for `--context pier`.
+pub async fn leave(note: &Path) -> Result<(), String> {
     let names = docker(&["context", "ls", "--format", "{{.Name}}"]).await?;
-    let back = if names.lines().any(|n| n.trim() == "desktop-linux") { "desktop-linux" } else { "default" };
-    docker(&["context", "use", back]).await?;
+    docker(&["context", "use", &way_back(remembered(note), &names)]).await?;
+    let _ = std::fs::remove_file(note);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaving_goes_back_to_the_context_that_was_in_use() {
+        let existing = "default\ndesktop-linux\nmy-server\npier\n";
+        assert_eq!(way_back(Some("my-server".into()), existing), "my-server");
+        // Not to Docker Desktop's just because it exists.
+        assert_eq!(way_back(None, existing), "default");
+        // The remembered one was removed since.
+        assert_eq!(way_back(Some("gone".into()), existing), "default");
+    }
+
+    #[test]
+    fn pier_itself_is_never_remembered_as_the_way_back() {
+        let dir = std::env::temp_dir().join(format!("pier-context-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("docker-context");
+        assert_eq!(remembered(&note), None);
+        std::fs::write(&note, "my-server\n").unwrap();
+        assert_eq!(remembered(&note), Some("my-server".into()));
+        std::fs::write(&note, "pier").unwrap();
+        assert_eq!(remembered(&note), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

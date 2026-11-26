@@ -60,9 +60,22 @@ Things worth knowing:
   rule lives in `src-tauri/src/engine.rs`. "Keep the engine running when
   nothing is using it" in Settings turns this off; the choice is saved in
   `config.json` as `keepRunning`.
-- Going to sleep stops dockerd before letting go. On a distro without
-  systemd dockerd is an ordinary process, and WSL does not shut a distro down
-  while one runs.
+- Pier never stops Docker by itself. Only Stop in the window (and "Stop
+  engine and shut down distro") does. Going to sleep lets go of Pier's own
+  WSL session and event stream and nothing else, because Pier cannot see
+  Docker being used from inside the distro: a `docker build` or `docker
+  pull` typed into a shell there is neither a container nor a pipe
+  connection, it can connect at any moment, and stopping dockerd would cut
+  it off.
+
+  When memory comes back is therefore up to WSL, which shuts a distro down
+  once nothing in it holds it open:
+  - With systemd, that happens by itself shortly after Pier lets go
+    (services, dockerd included, do not hold a distro open), unless you
+    have a shell or a task of your own in the distro.
+  - Without systemd, dockerd is an ordinary process and does hold the
+    distro open. Nothing is given back until you press Stop, which frees
+    the engine's memory; the rest follows when WSL shuts the distro down.
 - Ending a `wsl.exe` also ends its `wslhost.exe` helper (`Session` in
   wsl.rs). WSL starts that helper to keep a console-less session open if
   wsl.exe goes away; left behind, it holds the distro up for ever. Pier's
@@ -87,7 +100,10 @@ Things worth knowing:
   full control of Docker, the same as Docker Desktop's pipe does.
 - "Use Pier for docker commands" in Settings runs `docker context create
   pier` and `docker context use pier` for you (`src-tauri/src/context.rs`).
-  It needs a docker.exe on PATH; Pier does not ship one.
+  The context in use before is remembered (in `docker-context` next to
+  `config.json`) and is what "Stop using Pier" goes back to. It needs a
+  docker.exe on PATH; Pier does not ship one (`winget install
+  Docker.DockerCLI` installs the CLI on its own, without Docker Desktop).
 - "Pull image" pulls public images only: no registry credentials are sent.
   Stopping the request (Cancel, or closing the window) makes Docker abandon
   the pull.
@@ -96,6 +112,8 @@ Things worth knowing:
 
 - Built-in terminal (the shell button opens Windows Terminal for now)
 - Pulling from a private registry, building an image
+- Stop does not stop containerd (about 75 MB with no containers, for as
+  long as the distro stays up).
 - `name.pier.local` domains with HTTPS
 - `.wslconfig` memory settings
 - `docker run -i` with piped stdin through the bridge (named pipes have no

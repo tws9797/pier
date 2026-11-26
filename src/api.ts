@@ -53,6 +53,15 @@ export interface Volume {
 /** Outside the Tauri shell (plain `npm run dev`) the UI runs on sample data. */
 const live = isTauri();
 
+/**
+ * Which window this page is in. The backend sets it when it creates the
+ * window, and it goes along with every request for something that keeps
+ * running (logs, a pull): the backend ends those when their window closes,
+ * and a request that arrives after that must not be taken for one of the
+ * next window's.
+ */
+const windowNumber = (window as unknown as { __PIER_WINDOW__?: number }).__PIER_WINDOW__ ?? 0;
+
 export const getStatus = () => (live ? invoke<Status>("status") : demo.status());
 export const setDistro = (name: string) => (live ? invoke<void>("set_distro", { name }) : demo.setDistro(name));
 export const setStartOnLogin = (enabled: boolean) =>
@@ -203,7 +212,7 @@ export async function followLogs(
   };
   const onChunk = new Channel<{ seq: number; text: string }>();
   onChunk.onmessage = (batch) => onText(batch.text, () => confirm(batch.seq));
-  streamId = await invoke<number>("stream_logs", { distro, id, tail, onChunk });
+  streamId = await invoke<number>("stream_logs", { window: windowNumber, distro, id, tail, onChunk });
   if (owed !== undefined) confirm(owed);
   return () => void invoke("stop_stream", { streamId });
 }
@@ -244,7 +253,7 @@ export async function pullImage(distro: string, image: string, onProgress: (p: P
   });
   const onEvent = new Channel<PullEvent>();
   onEvent.onmessage = (e) => (e.kind === "progress" ? onProgress(e) : e.kind === "done" ? finish(e.message) : fail(e.message));
-  const streamId = await invoke<number>("pull_image", { distro, image, onEvent });
+  const streamId = await invoke<number>("pull_image", { window: windowNumber, distro, image, onEvent });
   const stop = () => void invoke("stop_stream", { streamId });
   finished.then(stop, stop);
   return { finished, cancel: () => fail("Cancelled") };
@@ -258,6 +267,8 @@ export interface DockerContext {
   current: string | null;
   /** That context is Pier's. */
   active: boolean;
+  /** While Pier's is in use: the context switching back returns to, if one was remembered. */
+  previous: string | null;
 }
 export const dockerContext = () => (live ? invoke<DockerContext>("docker_context") : demo.dockerContext());
 /** Points docker commands on Windows at Pier (`true`), or back at what they used before. */

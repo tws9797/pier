@@ -888,38 +888,36 @@ impl Engine {
             self.expected.store(false, Ordering::Relaxed);
             self.up.store(false, Ordering::Relaxed);
             self.events_live.store(false, Ordering::Relaxed);
-            // The keep-alive is let go of by `settle_asleep`, after dockerd
-            // has been stopped: stopping it needs the distro up.
+            // The keep-alive is let go of by `release_asleep`, in turn with
+            // starts and stops.
         }
         sleep
     }
 
-    /// Finishes putting the engine to sleep: stops dockerd, then lets go of
-    /// the distro.
+    /// Finishes putting the engine to sleep: lets go of Pier's own hold on
+    /// the distro, and nothing else.
     ///
-    /// Letting go alone is not enough. Found by running it for real: on a
-    /// distro without systemd, dockerd is an ordinary process, and WSL does
-    /// not shut a distro down while one is running. Pier "slept", and the
-    /// distro stayed up with all its memory. Nothing is lost by stopping
-    /// dockerd here: sleep only happens with no containers running, and the
-    /// next wake-up starts it again.
+    /// Pier never stops Docker by itself. Its view of "idle" (no container
+    /// running, nothing on its pipe, no window) misses Docker being used
+    /// from inside the distro: a `docker build` or `docker pull` typed into
+    /// a shell there connects straight to the socket, at any moment, and
+    /// stopping dockerd would cut it off. No check beforehand can rule that
+    /// out, so there is none, and no stop. Only the Stop button stops it.
+    ///
+    /// What that means for memory depends on the distro. With systemd, WSL
+    /// shuts the distro down once nothing else is in it, services and all,
+    /// and a task run from a shell keeps it up by itself. Without systemd,
+    /// dockerd is an ordinary process and WSL does not shut a distro down
+    /// while one runs (found by running it for real): there, nothing is
+    /// given back until the user presses Stop.
     ///
     /// It queues with starts and stops. If a wake-up got in first, the engine
     /// is no longer asleep and nothing is done.
-    async fn settle_asleep(&self) {
+    async fn release_asleep(&self) {
         let Ok(distro) = self.distro() else { return };
         let _one = self.starting.lock().await;
-        let still_asleep = |engine: &Self| {
-            engine.sleeping.load(Ordering::Relaxed) && engine.distro().ok().as_deref() == Some(distro.as_str())
-        };
-        if !still_asleep(self) {
-            return;
-        }
-        if let Ok(Err(e)) = tokio::time::timeout(self.stop_timeout, (self.backend.stop)(distro.clone())).await {
-            eprintln!("engine: could not stop Docker in {distro} before sleeping: {e}");
-        }
         let _gate = self.gate.lock().unwrap();
-        if still_asleep(self) {
+        if self.sleeping.load(Ordering::Relaxed) && self.distro().ok().as_deref() == Some(distro.as_str()) {
             self.drop_keepalive(&distro);
         }
     }
@@ -958,19 +956,24 @@ impl Engine {
     async fn watch_selected(&self, idle_after: Duration, every: Duration) {
         loop {
             tokio::time::sleep(every).await;
-            if !self.events_live.load(Ordering::Relaxed) {
-                continue;
-            }
-            if !self.in_use() {
-                self.recount().await; // one request, and only after a container event
-            }
-            if self.in_use() || self.count_stale.load(Ordering::Relaxed) || self.running_now() > 0 {
-                self.touch();
-                continue;
-            }
-            if self.try_sleep(idle_after) {
-                self.settle_asleep().await;
-            }
+            self.idle_step(idle_after).await;
+        }
+    }
+
+    /// One look at the selected engine, and putting it to sleep if it is idle.
+    async fn idle_step(&self, idle_after: Duration) {
+        if !self.events_live.load(Ordering::Relaxed) {
+            return;
+        }
+        if !self.in_use() {
+            self.recount().await; // one request, and only after a container event
+        }
+        if self.in_use() || self.count_stale.load(Ordering::Relaxed) || self.running_now() > 0 {
+            self.touch();
+            return;
+        }
+        if self.try_sleep(idle_after) {
+            self.release_asleep().await;
         }
     }
 }
@@ -1577,21 +1580,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn going_to_sleep_stops_docker_and_then_lets_go_of_the_distro() {
+    async fn going_to_sleep_lets_go_of_the_distro_and_stops_nothing_in_it() {
+        // A docker build or pull typed into a shell in the distro may be
+        // running: Pier cannot see it, so Pier never stops Docker by itself.
         let (engine, _, stopped) = engine_recording_stops("a");
         let mut engine = Arc::into_inner(engine).unwrap();
         engine.backend.start = Box::new(|_| Box::pin(async { Ok(()) }));
+        engine.backend.terminate = Box::new(|_| panic!("going to sleep must not shut the distro down"));
         engine.window_open.store(false, Ordering::Relaxed);
         let target = engine.target().unwrap();
         engine.seen_running(&target);
         assert!(engine.events_connected(&target));
         engine.count_stale.store(false, Ordering::Relaxed);
 
-        assert!(engine.try_sleep(Duration::ZERO));
-        assert!(engine.holds("a"), "held until Docker has been stopped");
-        engine.settle_asleep().await;
-        assert_eq!(*stopped.lock().unwrap(), vec!["a".to_string()], "dockerd was stopped, or WSL would keep the distro up");
-        assert!(!engine.holds("a"));
+        engine.idle_step(Duration::ZERO).await;
+        assert!(stopped.lock().unwrap().is_empty(), "Docker was stopped: {:?}", stopped.lock().unwrap());
+        assert!(!engine.holds("a"), "Pier's own hold is given up");
         assert!(engine.is_asleep());
 
         // It is a sleep, not a stop: the next connection brings it back.
@@ -1602,7 +1606,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_wake_up_that_gets_in_first_cancels_the_rest_of_the_sleep() {
-        let (engine, _, stopped) = engine_recording_stops("a");
+        let (engine, _, _) = engine_recording_stops("a");
         let mut engine = Arc::into_inner(engine).unwrap();
         engine.backend.start = Box::new(|_| Box::pin(async { Ok(()) }));
         engine.window_open.store(false, Ordering::Relaxed);
@@ -1612,10 +1616,9 @@ mod tests {
         engine.count_stale.store(false, Ordering::Relaxed);
 
         assert!(engine.try_sleep(Duration::ZERO));
-        assert!(engine.wake("a").await); // a docker command arrives before the stop has run
-        engine.settle_asleep().await;
-        assert!(stopped.lock().unwrap().is_empty(), "Docker is not stopped under a tool that just connected");
-        assert!(engine.holds("a"));
+        assert!(engine.wake("a").await); // a docker command arrives before the distro is let go of
+        engine.release_asleep().await;
+        assert!(engine.holds("a"), "the distro is not let go of under a tool that just connected");
         assert!(engine.up.load(Ordering::Relaxed));
     }
 

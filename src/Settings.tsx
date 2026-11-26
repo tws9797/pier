@@ -64,8 +64,13 @@ export function Settings(props: {
           <h2>Use docker from Windows</h2>
           <p className="muted">
             While Pier is running, the engine is also reachable from PowerShell, docker.exe and editors through a named
-            pipe. {context?.cli === false ? "docker.exe was not found on PATH. Once it is installed, run this:" : ""}
-            {context?.cli && context.active && "docker commands on Windows go to Pier now."}
+            pipe.{" "}
+            {context?.cli === false
+              ? "docker.exe was not found on PATH, and Pier does not include one. Install it (winget install Docker.DockerCLI), then run this:"
+              : ""}
+            {context?.cli &&
+              context.active &&
+              `docker commands on Windows go to Pier now. Switching back returns them to the "${context.previous ?? "default"}" context.`}
             {context?.cli &&
               !context.active &&
               (context.current
@@ -134,8 +139,15 @@ export function Settings(props: {
           <p className="muted">
             {status.keepRunning
               ? `Pier keeps ${status.distro ?? "the distro"} awake until you stop the engine, so docker commands never wait for it to start.`
-              : `After 5 minutes with this window closed, no containers running and no docker command connected, Pier lets WSL shut ${status.distro ?? "the distro"} down to free its memory. The next docker command, or opening this window, starts it again.`}
+              : `After 5 minutes with this window closed, no containers running and no docker command connected, Pier lets go of ${status.distro ?? "the distro"}, and WSL shuts it down to free its memory once nothing else is using it. The next docker command, or opening this window, starts it again.`}
           </p>
+          {!status.keepRunning && (
+            <p className="muted">
+              Pier never stops Docker by itself, so a docker build or pull started in a shell inside the distro is not
+              interrupted. On a distro without systemd WSL cannot shut the distro down while Docker runs: use Stop
+              engine to free its memory there.
+            </p>
+          )}
         </section>
 
         <section>

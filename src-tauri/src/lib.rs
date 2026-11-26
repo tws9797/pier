@@ -44,6 +44,58 @@ impl AppState {
         let distro = self.engine.distro.lock().unwrap().clone();
         write_config(&self.config_path, distro.as_deref(), self.engine.keeps_running())
     }
+
+    /// Keeps `task` (a log stream, a pull) as belonging to the window, so
+    /// that `stop_stream` can end it and closing the window does. `window`
+    /// is the number of the window that asked, as the page itself gave it:
+    /// each window is told its number when it is created (`show_main`), and
+    /// the number is `window_epoch`, which moves on when the window is
+    /// destroyed.
+    ///
+    /// If that window is gone by now, the task is ended here instead and the
+    /// request fails: nothing would ever stop it otherwise. It does not
+    /// matter when the request started running (before the window closed,
+    /// after it, or after another window was opened): it carries the number
+    /// of the window it came from, and only the window that is open now has
+    /// the current one.
+    ///
+    /// Closing the window moves the epoch first, then empties `streams`
+    /// under the lock taken here. So a task either fails this check or is in
+    /// the map before it is emptied.
+    fn keep(&self, window: u32, task: tauri::async_runtime::JoinHandle<()>, ack: Arc<LogAck>) -> Result<u32, String> {
+        let mut streams = self.streams.lock().unwrap();
+        if self.window_epoch.load(Ordering::Relaxed) != window {
+            task.abort();
+            return Err("The window was closed".into());
+        }
+        let id = self.next_stream.fetch_add(1, Ordering::Relaxed);
+        streams.insert(id, LogStream { task, ack });
+        Ok(id)
+    }
+
+    /// The window was destroyed: everything that belonged to it ends. A
+    /// destroyed window can no longer stop its own streams, and a quiet
+    /// container or a pull still waiting for the registry would never make a
+    /// send fail.
+    fn window_gone(&self) {
+        // From here on only the pipe or running containers keep the engine awake.
+        self.engine.window_closed();
+        // Before the clean-up below, so a request still on its way fails the
+        // check in `keep` and does not register late.
+        self.window_epoch.fetch_add(1, Ordering::Relaxed);
+        // The stats connection belongs to the window too.
+        if let Ok(mut link) = self.stats.try_lock() {
+            *link = None;
+        }
+        for (_, stream) in self.streams.lock().unwrap().drain() {
+            stream.task.abort();
+        }
+    }
+
+    /// Where the docker context in use before Pier's is remembered (context.rs).
+    fn context_note(&self) -> PathBuf {
+        self.config_path.with_file_name("docker-context")
+    }
 }
 
 fn write_config(path: &std::path::Path, distro: Option<&str>, keep_running: bool) -> Result<(), String> {
@@ -58,6 +110,95 @@ fn write_config(path: &std::path::Path, distro: Option<&str>, keep_running: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state_with_a_window() -> AppState {
+        AppState {
+            engine: Arc::new(Engine::new(Some("test".into()))), // nothing here calls WSL
+            version: Mutex::new(None),
+            distros: Mutex::new(None),
+            streams: Mutex::new(HashMap::new()),
+            next_stream: AtomicU32::new(1),
+            window_epoch: AtomicU32::new(0),
+            stats: tokio::sync::Mutex::new(None),
+            config_path: PathBuf::from("unused"),
+            product: "Pier".into(),
+        }
+    }
+
+    /// A task like a pull that waits for the registry: it never finishes by
+    /// itself. The flag goes up when it is ended.
+    fn waiting_task() -> (tauri::async_runtime::JoinHandle<()>, Arc<std::sync::atomic::AtomicBool>) {
+        struct Ended(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Ended {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = Ended(ended.clone());
+        let task = tauri::async_runtime::spawn(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        });
+        (task, ended)
+    }
+
+    async fn was_ended(flag: &std::sync::atomic::AtomicBool) -> bool {
+        for _ in 0..100 {
+            if flag.load(Ordering::Relaxed) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn closing_the_window_ends_a_stream_it_was_keeping() {
+        let state = state_with_a_window();
+        let asked_in = state.window_epoch.load(Ordering::Relaxed);
+        let (task, ended) = waiting_task();
+        assert!(state.keep(asked_in, task, Arc::new(LogAck::default())).is_ok());
+        assert!(!ended.load(Ordering::Relaxed));
+        state.window_gone();
+        assert!(was_ended(&ended).await);
+        assert!(state.streams.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stream_asked_for_before_the_window_closed_is_not_kept_after() {
+        // The request came in, the window closed, then the task turned up.
+        let state = state_with_a_window();
+        let asked_in = state.window_epoch.load(Ordering::Relaxed);
+        state.window_gone();
+        let (task, ended) = waiting_task();
+        assert!(state.keep(asked_in, task, Arc::new(LogAck::default())).is_err());
+        assert!(was_ended(&ended).await, "ended at once: nothing would stop it later");
+        assert!(state.streams.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_request_from_the_old_window_is_not_taken_for_the_new_one() {
+        // Closed and opened again at once. A request the old window sent
+        // only gets served now, with a window open again.
+        let state = state_with_a_window();
+        let old_window = state.window_epoch.load(Ordering::Relaxed);
+        state.window_gone();
+        state.engine.window_opened();
+        let new_window = state.window_epoch.load(Ordering::Relaxed);
+        assert_ne!(old_window, new_window);
+
+        let (task, ended) = waiting_task();
+        assert!(state.keep(old_window, task, Arc::new(LogAck::default())).is_err());
+        assert!(was_ended(&ended).await);
+
+        // The new window keeps what it asks for itself.
+        let (task, ended) = waiting_task();
+        assert!(state.keep(new_window, task, Arc::new(LogAck::default())).is_ok());
+        assert!(!ended.load(Ordering::Relaxed));
+        state.window_gone();
+        assert!(was_ended(&ended).await);
+    }
 
     #[test]
     fn only_one_log_batch_is_out_at_a_time_and_the_backlog_keeps_the_newest() {
@@ -492,6 +633,7 @@ fn valid_id(id: &str) -> bool {
 #[tauri::command]
 async fn stream_logs(
     state: State<'_, AppState>,
+    window: u32,
     distro: String,
     id: String,
     tail: u32,
@@ -500,8 +642,6 @@ async fn stream_logs(
     if !valid_id(&id) {
         return Err("Invalid container id".into());
     }
-    // The stream belongs to the window that is open right now.
-    let window = state.window_epoch.load(Ordering::Relaxed);
     state.engine.require(&distro)?;
     state.engine.allows(&distro)?;
     let info = docker::json(&distro, Method::GET, &format!("/containers/{id}/json"), None).await?;
@@ -517,14 +657,9 @@ async fn stream_logs(
         return Err(format!("Docker returned HTTP {}", reply.response.status()));
     }
 
-    // Registering and the close-time clean-up take the same lock, so a
-    // window that closed while Docker was answering is noticed here: the
-    // reply is dropped (killing its relay) instead of becoming a stream that
-    // nothing would ever stop.
-    let mut streams = state.streams.lock().unwrap();
-    if state.window_epoch.load(Ordering::Relaxed) != window {
-        return Err("The window was closed".into());
-    }
+    // A window that closed while Docker was answering is noticed by `keep`
+    // below: the task is ended (which drops the reply and kills its relay)
+    // instead of becoming a stream that nothing would ever stop.
     let consumed = Arc::new(LogAck::default());
     let ack = consumed.clone();
     let task = tauri::async_runtime::spawn(async move {
@@ -566,9 +701,7 @@ async fn stream_logs(
         }
     });
 
-    let stream_id = state.next_stream.fetch_add(1, Ordering::Relaxed);
-    streams.insert(stream_id, LogStream { task, ack });
-    Ok(stream_id)
+    state.keep(window, task, ack)
 }
 
 /// What a pull tells the window: how far it is, and then how it ended.
@@ -589,29 +722,40 @@ enum PullEvent {
 #[tauri::command]
 async fn pull_image(
     state: State<'_, AppState>,
+    window: u32,
     distro: String,
     image: String,
     on_event: Channel<PullEvent>,
 ) -> Result<u32, String> {
     let reference = docker::pull_reference(&image)?;
-    let window = state.window_epoch.load(Ordering::Relaxed);
     state.engine.require(&distro)?;
     state.engine.allows(&distro)?;
-    let reply = docker::send(&distro, Method::POST, &format!("/images/create?fromImage={reference}"), None).await?;
-    let status = reply.response.status();
-    if !status.is_success() {
-        // An image that does not exist is refused here, before any progress.
-        let body = reply.response.into_body().collect().await.map_err(|e| e.to_string())?.to_bytes();
-        let said: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-        return Err(said["message"].as_str().map(str::to_string).unwrap_or_else(|| format!("Docker returned HTTP {status}")));
-    }
 
-    let mut streams = state.streams.lock().unwrap();
-    if state.window_epoch.load(Ordering::Relaxed) != window {
-        return Err("The window was closed".into());
-    }
+    // The task is handed to `keep` before Docker has answered, so the pull
+    // can be cancelled, and ends with the window, from its first moment:
+    // Docker answers only once the registry has, which can take a while. If
+    // the window closed in the meantime, `keep` ends the task again.
     let task = tauri::async_runtime::spawn(async move {
+        let failed = |message: String| on_event.send(PullEvent::Failed { message });
+        let path = format!("/images/create?fromImage={reference}");
+        // A write, so `send` puts no limit on it; a registry that never
+        // answers must not leave the pull "starting" for ever.
+        let reply = match tokio::time::timeout(PULL_ANSWER_TIMEOUT, docker::send(&distro, Method::POST, &path, None)).await {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(e)) => return drop(failed(e)),
+            Err(_) => return drop(failed("The registry did not answer in time".into())),
+        };
         let docker::Reply { response, relay: _relay } = reply;
+        let status = response.status();
+        if !status.is_success() {
+            // An image that does not exist is refused here, before any progress.
+            let said: Value = match response.into_body().collect().await {
+                Ok(body) => serde_json::from_slice(&body.to_bytes()).unwrap_or(Value::Null),
+                Err(_) => Value::Null,
+            };
+            let message = said["message"].as_str().map(str::to_string);
+            return drop(failed(message.unwrap_or_else(|| format!("Docker returned HTTP {status}"))));
+        }
         let mut body = response.into_body();
         let mut tracker = docker::PullTracker::default();
         // Docker reports every few kilobytes of every layer; the window gets
@@ -641,27 +785,30 @@ async fn pull_image(
             Err(message) => PullEvent::Failed { message },
         });
     });
-    let stream_id = state.next_stream.fetch_add(1, Ordering::Relaxed);
-    streams.insert(stream_id, LogStream { task, ack: Arc::new(LogAck::default()) });
-    Ok(stream_id)
+    state.keep(window, task, Arc::new(LogAck::default()))
 }
+
+/// How long Docker gets to answer a pull at all: it does so once it has
+/// heard from the registry, before any layer is fetched.
+const PULL_ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Whether docker commands on Windows go to Pier, and what they go to if not.
 #[tauri::command]
-async fn docker_context() -> context::State {
-    context::state().await
+async fn docker_context(state: State<'_, AppState>) -> Result<context::State, String> {
+    Ok(context::state(&state.context_note()).await)
 }
 
 /// Points docker commands on Windows at Pier's pipe (`pier` true), or back at
 /// what they used before.
 #[tauri::command]
-async fn set_docker_context(pier: bool) -> Result<context::State, String> {
+async fn set_docker_context(state: State<'_, AppState>, pier: bool) -> Result<context::State, String> {
+    let note = state.context_note();
     if pier {
-        context::use_pier(&format!("npipe://{}", bridge::PIPE_NAME.replace('\\', "/"))).await?;
+        context::use_pier(&format!("npipe://{}", bridge::PIPE_NAME.replace('\\', "/")), &note).await?;
     } else {
-        context::leave().await?;
+        context::leave(&note).await?;
     }
-    Ok(context::state().await)
+    Ok(context::state(&note).await)
 }
 
 struct LogStream {
@@ -1020,7 +1167,15 @@ fn show_main(app: &AppHandle) {
         }
     });
     let Some(config) = app.config().app.windows.iter().find(|w| w.label == "main") else { return };
-    match tauri::WebviewWindowBuilder::from_config(app, config).and_then(|b| b.build()) {
+    // The page is told which window it is (`window_epoch` as of now, which
+    // stays put until this window is destroyed) and says so with every
+    // request for a stream, so a request from an earlier window is never
+    // taken for one of this window's (`AppState::keep`).
+    let number = app.state::<AppState>().window_epoch.load(Ordering::Relaxed);
+    let built = tauri::WebviewWindowBuilder::from_config(app, config)
+        .map(|b| b.initialization_script(format!("window.__PIER_WINDOW__ = {number};")))
+        .and_then(|b| b.build());
+    match built {
         Ok(window) => {
             let _ = window.set_focus();
         }
@@ -1112,19 +1267,7 @@ pub fn run() {
         // quiet container would never make the send fail, so end them here.
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
-                let state = window.state::<AppState>();
-                // From here on only the pipe or running containers keep the engine awake.
-                state.engine.window_closed();
-                // Bumped before the clean-up below, so a log request still
-                // waiting for Docker sees it and does not register late.
-                state.window_epoch.fetch_add(1, Ordering::Relaxed);
-                // The stats connection belongs to the window too.
-                if let Ok(mut link) = state.stats.try_lock() {
-                    *link = None;
-                }
-                for (_, stream) in state.streams.lock().unwrap().drain() {
-                    stream.task.abort();
-                }
+                window.state::<AppState>().window_gone();
             }
         })
         .invoke_handler(tauri::generate_handler![
