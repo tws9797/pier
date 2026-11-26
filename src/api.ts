@@ -257,4 +257,25 @@ export function onMaximizedChange(handler: (maximized: boolean) => void): () => 
   return () => void unlisten.then((off) => off());
 }
 
+/**
+ * Runs `task`, and if it fails runs it again after each of `waits` (ms), as
+ * long as `wanted()` still holds. Gives the value, or the last error once the
+ * tries are used up or the result is no longer wanted.
+ */
+export async function retrying<T>(
+  task: () => Promise<T>,
+  wanted: () => boolean,
+  waits = [1000, 3000],
+): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return { ok: true, value: await task() };
+    } catch (error) {
+      if (attempt >= waits.length || !wanted()) return { ok: false, error };
+      await new Promise((r) => setTimeout(r, waits[attempt]));
+      if (!wanted()) return { ok: false, error };
+    }
+  }
+}
+
 export const errorText = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : String(e));

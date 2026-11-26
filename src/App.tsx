@@ -66,7 +66,25 @@ export default function App() {
 
   // One request per list at a time. A refresh asked for while one is running
   // is folded into a single follow-up run, so slow answers cannot pile up.
+  //
+  // A list that fails to load is asked for again, twice, a little later each
+  // time. It used to be dropped without a word, which left an empty list on
+  // screen until the next Docker event or the one-minute refresh. If it still
+  // fails while the engine is up, the reason is shown.
   const loading = useRef<Partial<Record<List, { again: boolean; done: Promise<void> }>>>({});
+  const upNow = useRef(up);
+  upNow.current = up;
+  const load = useCallback(async (list: List, from: string) => {
+    // Not worth another try once a different distro is selected or the engine
+    // is known to be down: the status says so already.
+    const wanted = () => distroNow.current === from && upNow.current;
+    const ask = (): Promise<Container[] | Image[] | Volume[]> =>
+      list === "containers" ? api.listContainers(from) : list === "images" ? api.listImages(from) : api.listVolumes(from);
+    const result = await api.retrying(ask, wanted);
+    if (result.ok) return result.value;
+    if (wanted()) setError(`Could not load ${list}: ${api.errorText(result.error)}`);
+    return null;
+  }, []);
   const refresh = useCallback((list: List): Promise<void> => {
     const running = loading.current[list];
     if (running) {
@@ -80,25 +98,19 @@ export default function App() {
           state.again = false;
           const from = distroNow.current;
           if (!from) return;
-          const rows =
-            list === "containers"
-              ? await api.listContainers(from)
-              : list === "images"
-                ? await api.listImages(from)
-                : await api.listVolumes(from);
+          const rows = await load(list, from);
           // An answer from a distro that is no longer selected is dropped.
           if (distroNow.current !== from) state.again = true;
-          else setLoaded((prev) => ({ ...(prev.distro === from ? prev : NOTHING), distro: from, [list]: rows }));
+          // No answer: what is on screen stays as it is, rather than going empty.
+          else if (rows) setLoaded((prev) => ({ ...(prev.distro === from ? prev : NOTHING), distro: from, [list]: rows }));
         } while (state.again);
-      } catch {
-        // The status poll reports an unreachable engine; nothing to add here.
       } finally {
         delete loading.current[list];
       }
     })();
     loading.current[list] = state;
     return state.done;
-  }, []);
+  }, [load]);
   const refreshData = useCallback(() => Promise.all(LISTS.map(refresh)), [refresh]);
 
   // Nothing polls while the window is minimised or hidden to the tray.
