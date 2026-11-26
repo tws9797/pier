@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as api from "./api";
 import type { Status } from "./api";
 import { Check } from "./ui";
@@ -11,6 +11,25 @@ export function Settings(props: {
 }) {
   const { status } = props;
   const [copied, setCopied] = useState(false);
+  // Asked once when the page opens: finding out runs docker.exe. Until the
+  // answer is in, the command to copy is shown, which is always right.
+  const [context, setContext] = useState<api.DockerContext | null>(null);
+  const [switching, setSwitching] = useState(false);
+  useEffect(() => {
+    let wanted = true;
+    api.dockerContext().then((c) => wanted && setContext(c), () => {});
+    return () => {
+      wanted = false;
+    };
+  }, []);
+  const { onError } = props;
+  const switchContext = (pier: boolean) => {
+    setSwitching(true);
+    api
+      .setDockerContext(pier)
+      .then(setContext, (e) => onError(api.errorText(e)))
+      .finally(() => setSwitching(false));
+  };
   if (!status) return null;
 
   const pipeUrl = "npipe://" + status.pipe.replace(/\\/g, "/");
@@ -44,23 +63,35 @@ export function Settings(props: {
         <section>
           <h2>Use docker from Windows</h2>
           <p className="muted">
-            While Pier is open, the engine is also reachable from PowerShell, docker.exe and editors through a named
-            pipe. Run this once:
+            While Pier is running, the engine is also reachable from PowerShell, docker.exe and editors through a named
+            pipe. {context?.cli === false ? "docker.exe was not found on PATH. Once it is installed, run this:" : ""}
+            {context?.cli && context.active && "docker commands on Windows go to Pier now."}
+            {context?.cli &&
+              !context.active &&
+              (context.current
+                ? `docker commands on Windows go to the "${context.current}" context now.`
+                : "docker commands on Windows do not go to Pier yet.")}
           </p>
-          <div className="code">
-            <code>{contextCommand}</code>
-            <button
-              className="btn small"
-              onClick={() =>
-                navigator.clipboard.writeText(contextCommand).then(() => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
-                })
-              }
-            >
-              {copied ? "Copied" : "Copy"}
+          {context?.cli ? (
+            <button className="btn" disabled={switching} onClick={() => switchContext(!context.active)}>
+              {context.active ? "Stop using Pier for docker commands" : "Use Pier for docker commands"}
             </button>
-          </div>
+          ) : (
+            <div className="code">
+              <code>{contextCommand}</code>
+              <button
+                className="btn small"
+                onClick={() =>
+                  navigator.clipboard.writeText(contextCommand).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1500);
+                  })
+                }
+              >
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+          )}
         </section>
 
         <section>

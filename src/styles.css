@@ -762,6 +762,58 @@ select {
   user-select: text;
 }
 
+/* The strip under the Images toolbar: a name to pull, or a pull's progress. */
+.pull {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-side);
+}
+.pull input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.pull input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.pull-text {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.pull-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pull-track {
+  flex: 1;
+  min-width: 60px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-active);
+  overflow: hidden;
+}
+.pull-track > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+
 .toast {
   position: fixed;
   left: 50%;

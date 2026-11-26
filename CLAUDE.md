@@ -6,14 +6,23 @@ Read README.md for the architecture and the "Not done yet" list.
 
 ## Status
 
-Runs on Windows. Day to day it has been run against Docker Desktop's engine
-through its WSL integration in Ubuntu. The parts that need an engine Pier
-owns (start, stop, idle sleep, wake on a pipe connection) were run once, end
-to end, against a throwaway Alpine distro with its own dockerd.
+Runs on Windows. Until 2026-11-26 it was run day to day against Docker
+Desktop's engine through its WSL integration in Ubuntu. Since then Ubuntu
+(systemd) has its own docker-ce, and Pier manages that.
+
+The parts that need an engine Pier owns (start, stop, idle sleep, wake on a
+pipe connection) have had two real runs: one end to end against a throwaway
+Alpine distro with its own dockerd, and one against the systemd-managed
+docker-ce in Ubuntu (sleep after the idle time, wake from the pipe in 1.8 s,
+wake from the window, no sleep while a container runs, Stop and Start
+buttons). With Docker Desktop closed, the systemd distro shut down about
+15 s after the sleep and a pipe connection brought it back, cold, in 5 s.
+The `login -- user` processes WSL keeps in a systemd distro do not hold it
+up; Docker Desktop's integration proxy does.
 
 Still only covered by unit tests with a stand-in backend (src-tauri/src/engine.rs):
 two real distros at once (switching, background keep-alive), a Docker that
-hangs, a systemd-managed dockerd. Clicking the tray icon was only simulated.
+hangs. Clicking the tray icon was only simulated.
 
 The state machine in engine.rs was hardened over many review rounds before it
 had been run for real. The one real run then found three bugs no review had
@@ -45,9 +54,9 @@ WSL produces a Linux app that cannot call `wsl.exe` the same way.
 
 ## Suggested next steps
 
-1. Install docker-ce in the WSL distro and run Pier against its own engine
-   instead of Docker Desktop's. Everything about start, stop and sleep has
-   only had one real run.
+1. Use Pier on its own engine day to day, with Docker Desktop closed or its
+   WSL integration for the distro turned off. Missing for that: pulling an
+   image from the UI, and a button that sets up the Windows `docker` context.
 2. Built-in terminal (xterm.js over `/exec` + hijacked connection).
 3. `.wslconfig` memory settings.
 4. `name.pier.local` domains via a local DNS responder and reverse proxy.

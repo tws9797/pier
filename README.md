@@ -85,10 +85,17 @@ Things worth knowing:
   the tray icon creates the window again. Quit from the tray menu.
 - The relay runs as root in the distro, so the pipe gives your Windows user
   full control of Docker, the same as Docker Desktop's pipe does.
+- "Use Pier for docker commands" in Settings runs `docker context create
+  pier` and `docker context use pier` for you (`src-tauri/src/context.rs`).
+  It needs a docker.exe on PATH; Pier does not ship one.
+- "Pull image" pulls public images only: no registry credentials are sent.
+  Stopping the request (Cancel, or closing the window) makes Docker abandon
+  the pull.
 
 ## Not done yet
 
 - Built-in terminal (the shell button opens Windows Terminal for now)
+- Pulling from a private registry, building an image
 - `name.pier.local` domains with HTTPS
 - `.wslconfig` memory settings
 - `docker run -i` with piped stdin through the bridge (named pipes have no

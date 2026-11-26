@@ -1,5 +1,5 @@
 // Sample data so the UI can be worked on in a browser without Tauri or WSL.
-import type { Container, Image, Status, Volume } from "./api";
+import type { Container, DockerContext, Image, Pull, PullProgress, Status, Volume } from "./api";
 
 let engine = true;
 const now = Math.floor(Date.now() / 1000);
@@ -198,6 +198,48 @@ export function containerStats(distro: string, ids: string[]) {
     }),
   );
 }
+
+/** A pull that takes a few seconds. A name with "missing" in it is refused; one with "broken" fails halfway. */
+export function pullImage(distro: string, image: string, onProgress: (p: PullProgress) => void): Promise<Pull> {
+  if (!engine || distro !== selected) return Promise.reject("Docker engine is not reachable");
+  const name = image.trim();
+  if (!name) return Promise.reject("Type an image name, for example nginx:alpine");
+  if (name.includes("missing")) return Promise.reject(`pull access denied for ${name}, repository does not exist`);
+  const tag = name.split("/").pop()!.includes(":") ? name : name + ":latest";
+  const total = 184e6;
+  let received = 0;
+  let timer = 0;
+  const finished = new Promise<string>((resolve, reject) => {
+    cancelPull = () => {
+      clearInterval(timer);
+      reject("Cancelled");
+    };
+    timer = window.setInterval(() => {
+      received = Math.min(total, received + total / 20);
+      onProgress({ layers: 6, done: Math.floor((received / total) * 6), received, total });
+      if (name.includes("broken") && received > total / 2) {
+        clearInterval(timer);
+        reject("unexpected EOF");
+      } else if (received >= total) {
+        clearInterval(timer);
+        images = [
+          { Id: "sha256:" + Date.now().toString(16).padStart(64, "0"), RepoTags: [tag], Size: total, Created: Math.floor(Date.now() / 1000), Containers: 0 },
+          ...images.filter((i) => i.RepoTags?.[0] !== tag),
+        ];
+        resolve(`Downloaded newer image for ${tag}`);
+      }
+    }, 150);
+  });
+  return wait({ finished, cancel: () => cancelPull() });
+}
+let cancelPull = () => {};
+
+let context: DockerContext = { cli: true, current: "desktop-linux", active: false };
+export const dockerContext = () => wait(context);
+export const setDockerContext = (pier: boolean) => {
+  context = { cli: true, current: pier ? "pier" : "desktop-linux", active: pier };
+  return wait(context);
+};
 
 export function followLogs(onText: (t: string) => void) {
   const lines = [

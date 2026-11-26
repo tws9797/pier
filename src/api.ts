@@ -208,6 +208,62 @@ export async function followLogs(
   return () => void invoke("stop_stream", { streamId });
 }
 
+/** How far a pull has got, summed over its layers. */
+export interface PullProgress {
+  layers: number;
+  /** Layers downloaded and unpacked, or there already. */
+  done: number;
+  /** Bytes downloaded, and the size of the layers whose size is known. */
+  received: number;
+  total: number;
+}
+
+type PullEvent =
+  | ({ kind: "progress" } & PullProgress)
+  | { kind: "done"; message: string }
+  | { kind: "failed"; message: string };
+
+export interface Pull {
+  /** Docker's closing line ("Downloaded newer image for ..."), or the reason it failed. */
+  finished: Promise<string>;
+  /** Abandons the pull; `finished` then fails with "Cancelled". */
+  cancel: () => void;
+}
+
+/**
+ * Pulls `image` (a bare name means `:latest`) from its registry. Public
+ * images only. Fails at once if Docker refuses the name.
+ */
+export async function pullImage(distro: string, image: string, onProgress: (p: PullProgress) => void): Promise<Pull> {
+  if (!live) return demo.pullImage(distro, image, onProgress);
+  let finish!: (message: string) => void;
+  let fail!: (reason: string) => void;
+  const finished = new Promise<string>((resolve, reject) => {
+    finish = resolve;
+    fail = reject;
+  });
+  const onEvent = new Channel<PullEvent>();
+  onEvent.onmessage = (e) => (e.kind === "progress" ? onProgress(e) : e.kind === "done" ? finish(e.message) : fail(e.message));
+  const streamId = await invoke<number>("pull_image", { distro, image, onEvent });
+  const stop = () => void invoke("stop_stream", { streamId });
+  finished.then(stop, stop);
+  return { finished, cancel: () => fail("Cancelled") };
+}
+
+/** Where docker commands typed on Windows go. */
+export interface DockerContext {
+  /** docker.exe is installed (on PATH). */
+  cli: boolean;
+  /** The context in use, when the CLI would say. */
+  current: string | null;
+  /** That context is Pier's. */
+  active: boolean;
+}
+export const dockerContext = () => (live ? invoke<DockerContext>("docker_context") : demo.dockerContext());
+/** Points docker commands on Windows at Pier (`true`), or back at what they used before. */
+export const setDockerContext = (pier: boolean) =>
+  live ? invoke<DockerContext>("set_docker_context", { pier }) : demo.setDockerContext(pier);
+
 export const openTerminal = (distro: string, id: string) =>
   live ? invoke<void>("open_terminal", { distro, id }) : demo.ok();
 export const openInBrowser = (url: string) => (live ? openUrl(url) : void window.open(url));

@@ -195,6 +195,120 @@ pub async fn ping(distro: &str) -> bool {
     matches!(send(distro, Method::GET, "/_ping", None).await, Ok(r) if r.response.status().is_success())
 }
 
+/// What the user typed into "Pull image", as the reference to ask Docker for.
+///
+/// A name without a tag gets `:latest`: asked for a bare name, the API pulls
+/// every tag of the repository, which nobody typing "nginx" means.
+pub fn pull_reference(typed: &str) -> Result<String, String> {
+    let name = typed.trim();
+    // Pasted from a README more often than not.
+    let name = name.strip_prefix("docker pull ").unwrap_or(name).trim();
+    if name.is_empty() {
+        return Err("Type an image name, for example nginx:alpine".into());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || "._-/:@".contains(c)) {
+        return Err(format!("\"{name}\" is not an image name"));
+    }
+    let last = name.rsplit('/').next().unwrap_or(name);
+    Ok(if last.contains(':') || last.contains('@') { name.to_string() } else { format!("{name}:latest") })
+}
+
+/// How far a pull has got, summed over its layers.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct PullProgress {
+    /// Layers Docker has mentioned so far (more can still turn up).
+    pub layers: usize,
+    /// Layers that are downloaded and unpacked, or were there already.
+    pub done: usize,
+    /// Bytes downloaded, and the size of the layers whose size is known.
+    pub received: u64,
+    pub total: u64,
+}
+
+#[derive(Default)]
+struct PullLayer {
+    received: u64,
+    size: u64,
+    done: bool,
+}
+
+/// Reads the answer to `POST /images/create`: one JSON object per line, most
+/// of them about one layer (`id`), the last ones about the image as a whole.
+#[derive(Default)]
+pub struct PullTracker {
+    buf: Vec<u8>,
+    layers: std::collections::HashMap<String, PullLayer>,
+    /// Docker's closing line ("Status: Downloaded newer image for ...").
+    outcome: Option<String>,
+    error: Option<String>,
+}
+
+impl PullTracker {
+    pub fn push(&mut self, chunk: &[u8]) {
+        self.buf.extend_from_slice(chunk);
+        while let Some(end) = self.buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.buf.drain(..=end).collect();
+            if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                self.line(&value);
+            }
+        }
+    }
+
+    fn line(&mut self, v: &Value) {
+        if let Some(error) = v.get("error").and_then(Value::as_str) {
+            self.error = Some(error.to_string());
+            return;
+        }
+        let status = v.get("status").and_then(Value::as_str).unwrap_or("");
+        let Some(id) = v.get("id").and_then(Value::as_str) else {
+            if let Some(outcome) = status.strip_prefix("Status: ") {
+                self.outcome = Some(outcome.to_string());
+            }
+            return;
+        };
+        // The first line has the tag as its `id` ("Pulling from library/x"):
+        // only the statuses a layer goes through make a layer.
+        let (starts, complete, finished) = match status {
+            "Pulling fs layer" | "Waiting" | "Downloading" => (true, false, false),
+            "Verifying Checksum" | "Download complete" | "Extracting" => (true, true, false),
+            "Pull complete" | "Already exists" => (true, true, true),
+            _ => (false, false, false),
+        };
+        if !starts {
+            return;
+        }
+        let layer = self.layers.entry(id.to_string()).or_default();
+        let detail = &v["progressDetail"];
+        if status == "Downloading" {
+            layer.received = detail["current"].as_u64().unwrap_or(layer.received);
+            layer.size = detail["total"].as_u64().unwrap_or(layer.size).max(layer.received);
+        }
+        if complete {
+            layer.received = layer.size;
+        }
+        layer.done |= finished;
+    }
+
+    pub fn progress(&self) -> PullProgress {
+        PullProgress {
+            layers: self.layers.len(),
+            done: self.layers.values().filter(|l| l.done).count(),
+            received: self.layers.values().map(|l| l.received).sum(),
+            total: self.layers.values().map(|l| l.size).sum(),
+        }
+    }
+
+    /// Call when the answer has ended. Docker reports a failed pull inside
+    /// the answer, after a 200; an answer that just stops was cut off.
+    pub fn finish(self) -> Result<String, String> {
+        match (self.error, self.outcome) {
+            (Some(error), _) => Err(error),
+            (None, Some(outcome)) => Ok(outcome),
+            (None, None) => Err("The pull was interrupted".into()),
+        }
+    }
+}
+
 /// Splits Docker's multiplexed log stream (8-byte header per frame) into
 /// text. Containers started with a TTY send raw bytes instead.
 pub struct LogDecoder {
@@ -251,6 +365,45 @@ mod tests {
         let (a, b) = bytes.split_at(11);
         assert_eq!(d.push(a), "");
         assert_eq!(d.push(b), "hello\noops\n");
+    }
+
+    #[test]
+    fn a_bare_name_is_pulled_as_latest() {
+        assert_eq!(pull_reference(" nginx ").unwrap(), "nginx:latest");
+        assert_eq!(pull_reference("docker pull redis:8-alpine").unwrap(), "redis:8-alpine");
+        // A port in the registry is not a tag.
+        assert_eq!(pull_reference("localhost:5000/team/app").unwrap(), "localhost:5000/team/app:latest");
+        assert_eq!(pull_reference("ghcr.io/a/b@sha256:abc").unwrap(), "ghcr.io/a/b@sha256:abc");
+        assert!(pull_reference("").is_err());
+        assert!(pull_reference("nginx; rm -rf /").is_err());
+        assert!(pull_reference("nginx?tag=x&fromSrc=y").is_err());
+    }
+
+    #[test]
+    fn a_pull_is_summed_over_its_layers() {
+        let mut t = PullTracker::default();
+        t.push(b"{\"status\":\"Pulling from library/nginx\",\"id\":\"latest\"}\n");
+        t.push(b"{\"status\":\"Pulling fs layer\",\"id\":\"aaa\"}\n{\"status\":\"Already exists\",\"id\":\"bbb\"}\n");
+        // A line split across two chunks.
+        t.push(b"{\"status\":\"Downloading\",\"progressDetail\":{\"current\":40,");
+        t.push(b"\"total\":100},\"id\":\"aaa\"}\n");
+        assert_eq!(t.progress(), PullProgress { layers: 2, done: 1, received: 40, total: 100 });
+        t.push(b"{\"status\":\"Download complete\",\"id\":\"aaa\"}\n");
+        assert_eq!(t.progress().received, 100);
+        t.push(b"{\"status\":\"Pull complete\",\"id\":\"aaa\"}\n");
+        t.push(b"{\"status\":\"Digest: sha256:1\"}\n{\"status\":\"Status: Downloaded newer image for nginx:latest\"}\n");
+        assert_eq!(t.progress().done, 2);
+        assert_eq!(t.finish().unwrap(), "Downloaded newer image for nginx:latest");
+    }
+
+    #[test]
+    fn a_pull_that_fails_or_stops_is_an_error() {
+        let mut failed = PullTracker::default();
+        failed.push(b"{\"errorDetail\":{\"message\":\"no space left\"},\"error\":\"no space left\"}\n");
+        assert_eq!(failed.finish().unwrap_err(), "no space left");
+        let mut cut = PullTracker::default();
+        cut.push(b"{\"status\":\"Pulling fs layer\",\"id\":\"aaa\"}\n");
+        assert_eq!(cut.finish().unwrap_err(), "The pull was interrupted");
     }
 
     #[test]

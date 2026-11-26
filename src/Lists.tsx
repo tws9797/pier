@@ -1,5 +1,7 @@
+import { useState } from "react";
 import * as api from "./api";
 import type { Container, Image, Volume } from "./api";
+import { PullBar, usePulling } from "./Pull";
 import { Check, ConfirmButton, ConfirmTextButton, Empty, formatBytes, timeAgo, useSelection } from "./ui";
 
 type Run = (action: () => Promise<unknown>) => Promise<void>;
@@ -45,6 +47,10 @@ export function Images({ distro, images, run }: { distro: string; images: Image[
   const total = images.reduce((sum, i) => sum + i.Size, 0);
   const unused = images.filter((i) => i.Containers === 0).length;
   const selection = useSelection(sorted.map((i) => i.Id));
+  // The strip is open while the user is typing a name, and for as long as a
+  // pull runs, whichever page it was started from.
+  const [asking, setAsking] = useState(false);
+  const pullOpen = usePulling() || asking;
 
   return (
     <div className="pane">
@@ -62,6 +68,11 @@ export function Images({ distro, images, run }: { distro: string; images: Image[
             : `${images.length} images, ${formatBytes(total)}`}
         </span>
         <span className="spacer" />
+        {!pullOpen && (
+          <button className="btn" onClick={() => setAsking(true)}>
+            Pull image
+          </button>
+        )}
         <BulkActions
           selection={selection}
           noun="image"
@@ -79,6 +90,7 @@ export function Images({ distro, images, run }: { distro: string; images: Image[
           }
         />
       </header>
+      {pullOpen && <PullBar distro={distro} run={run} onClose={() => setAsking(false)} />}
       <div className="scroll">
         {images.length === 0 && <Empty title="No images" hint="Pulled and built images appear here." />}
         {sorted.map((img) => {

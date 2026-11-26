@@ -1,4 +1,5 @@
 mod bridge;
+mod context;
 mod docker;
 mod engine;
 mod startup;
@@ -570,6 +571,99 @@ async fn stream_logs(
     Ok(stream_id)
 }
 
+/// What a pull tells the window: how far it is, and then how it ended.
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum PullEvent {
+    Progress(docker::PullProgress),
+    Done { message: String },
+    Failed { message: String },
+}
+
+/// Pulls `image` from its registry (public images only: no credentials are
+/// sent). Progress and the outcome go to `on_event`; the returned id stops
+/// the pull when given to `stop_stream`, which makes Docker abandon it.
+///
+/// It is a stream like a container's logs and is kept with them, so closing
+/// the window ends it the same way.
+#[tauri::command]
+async fn pull_image(
+    state: State<'_, AppState>,
+    distro: String,
+    image: String,
+    on_event: Channel<PullEvent>,
+) -> Result<u32, String> {
+    let reference = docker::pull_reference(&image)?;
+    let window = state.window_epoch.load(Ordering::Relaxed);
+    state.engine.require(&distro)?;
+    state.engine.allows(&distro)?;
+    let reply = docker::send(&distro, Method::POST, &format!("/images/create?fromImage={reference}"), None).await?;
+    let status = reply.response.status();
+    if !status.is_success() {
+        // An image that does not exist is refused here, before any progress.
+        let body = reply.response.into_body().collect().await.map_err(|e| e.to_string())?.to_bytes();
+        let said: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        return Err(said["message"].as_str().map(str::to_string).unwrap_or_else(|| format!("Docker returned HTTP {status}")));
+    }
+
+    let mut streams = state.streams.lock().unwrap();
+    if state.window_epoch.load(Ordering::Relaxed) != window {
+        return Err("The window was closed".into());
+    }
+    let task = tauri::async_runtime::spawn(async move {
+        let docker::Reply { response, relay: _relay } = reply;
+        let mut body = response.into_body();
+        let mut tracker = docker::PullTracker::default();
+        // Docker reports every few kilobytes of every layer; the window gets
+        // the sum a few times a second.
+        let mut tick = tokio::time::interval(Duration::from_millis(150));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut changed = false;
+        loop {
+            tokio::select! {
+                frame = body.frame() => {
+                    let Some(Ok(frame)) = frame else { break };
+                    if let Some(data) = frame.data_ref() {
+                        tracker.push(data);
+                        changed = true;
+                    }
+                }
+                _ = tick.tick(), if changed => {
+                    changed = false;
+                    if on_event.send(PullEvent::Progress(tracker.progress())).is_err() {
+                        return; // the window is gone
+                    }
+                }
+            }
+        }
+        let _ = on_event.send(match tracker.finish() {
+            Ok(message) => PullEvent::Done { message },
+            Err(message) => PullEvent::Failed { message },
+        });
+    });
+    let stream_id = state.next_stream.fetch_add(1, Ordering::Relaxed);
+    streams.insert(stream_id, LogStream { task, ack: Arc::new(LogAck::default()) });
+    Ok(stream_id)
+}
+
+/// Whether docker commands on Windows go to Pier, and what they go to if not.
+#[tauri::command]
+async fn docker_context() -> context::State {
+    context::state().await
+}
+
+/// Points docker commands on Windows at Pier's pipe (`pier` true), or back at
+/// what they used before.
+#[tauri::command]
+async fn set_docker_context(pier: bool) -> Result<context::State, String> {
+    if pier {
+        context::use_pier(&format!("npipe://{}", bridge::PIPE_NAME.replace('\\', "/"))).await?;
+    } else {
+        context::leave().await?;
+    }
+    Ok(context::state().await)
+}
+
 struct LogStream {
     task: tauri::async_runtime::JoinHandle<()>,
     ack: Arc<LogAck>,
@@ -1045,7 +1139,10 @@ pub fn run() {
             stream_logs,
             ack_logs,
             stop_stream,
-            open_terminal
+            open_terminal,
+            pull_image,
+            docker_context,
+            set_docker_context
         ])
         .build(tauri::generate_context!())
         .expect("error while running Pier")
