@@ -3,6 +3,68 @@ import * as api from "./api";
 import type { Status } from "./api";
 import { Check } from "./ui";
 
+/** Amounts offered as a limit, in GB; those the PC does not have are left out. */
+const LIMITS = [2, 4, 6, 8, 12, 16, 24, 32, 48, 64];
+
+/**
+ * The memory limit of WSL as a whole (`.wslconfig`). Not a setting of Pier's:
+ * it is read from the file when the page opens and written there on change.
+ */
+function MemoryLimit({ onError }: { onError: (e: string) => void }) {
+  const [memory, setMemory] = useState<api.WslMemory | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [changed, setChanged] = useState(false);
+  useEffect(() => {
+    let wanted = true;
+    api.wslMemory().then((m) => wanted && setMemory(m), (e) => wanted && onError(api.errorText(e)));
+    return () => {
+      wanted = false;
+    };
+  }, [onError]);
+  if (!memory) return null;
+
+  const offered = LIMITS.filter((gb) => gb < memory.totalGb);
+  // A limit written by hand in another form ("6144MB") is shown as it is.
+  const custom = memory.limit !== null && (memory.limitGb === null || !offered.includes(memory.limitGb));
+  const value = memory.limit === null ? "none" : custom ? "custom" : String(memory.limitGb);
+  const change = (choice: string) => {
+    if (choice === "custom") return;
+    setSaving(true);
+    api
+      .setWslMemory(choice === "none" ? null : Number(choice))
+      .then((m) => {
+        setMemory(m);
+        setChanged(true);
+      }, (e) => onError(api.errorText(e)))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <section>
+      <h2>Memory limit</h2>
+      <p className="muted">
+        WSL runs all distros in one virtual machine. Without a limit it may grow to half of this PC's memory (
+        {Math.floor(memory.totalGb / 2)} of {memory.totalGb} GB) and is slow to give it back. The limit is for WSL as a
+        whole, not only for Docker.
+      </p>
+      <select aria-label="Memory limit for WSL" value={value} disabled={saving} onChange={(e) => change(e.target.value)}>
+        <option value="none">No limit</option>
+        {custom && <option value="custom">{memory.limit}</option>}
+        {offered.map((gb) => (
+          <option key={gb} value={gb}>
+            {gb} GB
+          </option>
+        ))}
+      </select>
+      <p className="muted note">
+        {changed ? "Saved to .wslconfig in your user folder. " : ""}A change applies the next time WSL starts, which is
+        once every distro has stopped. Running <code>wsl --shutdown</code> in PowerShell does that at once; it stops
+        everything running in every distro.
+      </p>
+    </section>
+  );
+}
+
 export function Settings(props: {
   status: Status | null;
   onChanged: () => void;
@@ -149,6 +211,8 @@ export function Settings(props: {
             </p>
           )}
         </section>
+
+        <MemoryLimit onError={onError} />
 
         <section>
           <h2>Free memory</h2>

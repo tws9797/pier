@@ -4,6 +4,7 @@ mod docker;
 mod engine;
 mod startup;
 mod wsl;
+mod wslconfig;
 
 use engine::Engine;
 use std::collections::HashMap;
@@ -792,6 +793,19 @@ async fn pull_image(
 /// heard from the registry, before any layer is fetched.
 const PULL_ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How much memory WSL may use (`.wslconfig`), and how much the PC has.
+#[tauri::command]
+fn wsl_memory() -> Result<wslconfig::Memory, String> {
+    wslconfig::memory()
+}
+
+/// Sets that limit to `gb` gigabytes, or removes it. It applies the next
+/// time WSL starts; nothing is shut down here.
+#[tauri::command]
+fn set_wsl_memory(gb: Option<u32>) -> Result<wslconfig::Memory, String> {
+    wslconfig::set_memory(gb)
+}
+
 /// Whether docker commands on Windows go to Pier, and what they go to if not.
 #[tauri::command]
 async fn docker_context(state: State<'_, AppState>) -> Result<context::State, String> {
@@ -1285,7 +1299,9 @@ pub fn run() {
             open_terminal,
             pull_image,
             docker_context,
-            set_docker_context
+            set_docker_context,
+            wsl_memory,
+            set_wsl_memory
         ])
         .build(tauri::generate_context!())
         .expect("error while running Pier")

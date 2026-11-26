@@ -738,6 +738,14 @@ h2 {
 .settings p {
   margin: 0 0 12px;
 }
+/* A remark under a control rather than above it. */
+.settings p.note {
+  margin: 10px 0 0;
+}
+.settings p code {
+  font: 12px var(--mono);
+  user-select: text;
+}
 select {
   height: 28px;
   min-width: 220px;

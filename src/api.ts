@@ -275,6 +275,20 @@ export const dockerContext = () => (live ? invoke<DockerContext>("docker_context
 export const setDockerContext = (pier: boolean) =>
   live ? invoke<DockerContext>("set_docker_context", { pier }) : demo.setDockerContext(pier);
 
+/** The memory limit of WSL (all distros share it), from `.wslconfig`. */
+export interface WslMemory {
+  /** The limit as written in the file ("8GB"), if there is one. */
+  limit: string | null;
+  /** The same in whole gigabytes, when it is that. */
+  limitGb: number | null;
+  /** The PC's memory, in gigabytes. */
+  totalGb: number;
+}
+export const wslMemory = () => (live ? invoke<WslMemory>("wsl_memory") : demo.wslMemory());
+/** Sets the limit, or removes it (`null`). Applies the next time WSL starts. */
+export const setWslMemory = (gb: number | null) =>
+  live ? invoke<WslMemory>("set_wsl_memory", { gb }) : demo.setWslMemory(gb);
+
 export const openTerminal = (distro: string, id: string) =>
   live ? invoke<void>("open_terminal", { distro, id }) : demo.ok();
 export const openInBrowser = (url: string) => (live ? openUrl(url) : void window.open(url));

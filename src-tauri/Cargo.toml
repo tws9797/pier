@@ -1,6 +1,6 @@
 [package]
 name = "pier"
-version = "0.1.4"
+version = "0.1.5"
 description = "A lightweight Docker manager for Windows + WSL2"
 authors = ["you"]
 edition = "2021"

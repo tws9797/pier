@@ -71,13 +71,19 @@ WSL produces a Linux app that cannot call `wsl.exe` the same way.
 
 ## Suggested next steps
 
+Pier is meant to stay light. A feature earns its place if the command line
+cannot do it (the engine's and WSL's life cycle) or if a glance beats
+typing (lists, status, logs). The owner decided against a built-in
+terminal on 2026-11-27: the shell button opens Windows Terminal, which does
+the job better.
+
 1. Use Pier on its own engine day to day, with Docker Desktop closed or its
-   WSL integration for the distro turned off. Missing for that: pulling an
-   image from the UI, and a button that sets up the Windows `docker` context.
-2. Built-in terminal (xterm.js over `/exec` + hijacked connection).
-3. `.wslconfig` memory settings.
-4. `name.pier.local` domains via a local DNS responder and reverse proxy.
+   WSL integration for the distro turned off.
+2. `name.pier.local` domains via a local DNS responder and reverse proxy.
 
 Done since the first version: per-container CPU/memory (one kept connection,
 `container_stats`), the Inspect tab, start at sign-in (`--hidden`, startup.rs),
-the NSIS installer (`npm run tauri build`).
+the NSIS installer (`npm run tauri build`), pulling an image, the button
+that sets up the Windows `docker` context, the WSL memory limit
+(`.wslconfig`; writing the file was run for real, the limit taking effect
+after a WSL restart was not).

@@ -1,5 +1,5 @@
 // Sample data so the UI can be worked on in a browser without Tauri or WSL.
-import type { Container, DockerContext, Image, Pull, PullProgress, Status, Volume } from "./api";
+import type { Container, DockerContext, Image, Pull, PullProgress, Status, Volume, WslMemory } from "./api";
 
 let engine = true;
 const now = Math.floor(Date.now() / 1000);
@@ -241,6 +241,13 @@ export const setDockerContext = (pier: boolean) => {
     ? { cli: true, current: "pier", active: true, previous: context.active ? context.previous : context.current }
     : { cli: true, current: context.previous ?? "default", active: false, previous: null };
   return wait(context);
+};
+
+let memory: WslMemory = { limit: null, limitGb: null, totalGb: 32 };
+export const wslMemory = () => wait(memory);
+export const setWslMemory = (gb: number | null) => {
+  memory = { limit: gb ? `${gb}GB` : null, limitGb: gb, totalGb: 32 };
+  return wait(memory);
 };
 
 export function followLogs(onText: (t: string) => void) {

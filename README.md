@@ -104,17 +104,21 @@ Things worth knowing:
   `config.json`) and is what "Stop using Pier" goes back to. It needs a
   docker.exe on PATH; Pier does not ship one (`winget install
   Docker.DockerCLI` installs the CLI on its own, without Docker Desktop).
+- "Memory limit" in Settings is the `memory` line under `[wsl2]` in
+  `%UserProfile%\.wslconfig` (`src-tauri/src/wslconfig.rs`). It is WSL's
+  setting, for all distros together, not Pier's: Pier changes that one line
+  and leaves the rest of the file alone. WSL reads it when its virtual
+  machine starts, so a change applies once every distro has stopped; Pier
+  does not run `wsl --shutdown` for you.
 - "Pull image" pulls public images only: no registry credentials are sent.
   Stopping the request (Cancel, or closing the window) makes Docker abandon
   the pull.
 
 ## Not done yet
 
-- Built-in terminal (the shell button opens Windows Terminal for now)
 - Pulling from a private registry, building an image
 - Stop does not stop containerd (about 75 MB with no containers, for as
   long as the distro stays up).
 - `name.pier.local` domains with HTTPS
-- `.wslconfig` memory settings
 - `docker run -i` with piped stdin through the bridge (named pipes have no
   half-close; Docker's own pipe uses a zero-byte-write convention for it)
