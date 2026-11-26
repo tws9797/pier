@@ -1,0 +1,41 @@
+# Type-checks and builds the frontend, then runs the backend's unit tests.
+# On Windows, because that is what Pier is for and the backend has Windows
+# code. The tests need no WSL: those that do are marked #[ignore].
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # Before the backend: it embeds the built frontend (`dist`).
+      - run: npm run build
+
+      - run: cargo test --lib
+        working-directory: src-tauri
