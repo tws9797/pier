@@ -64,7 +64,17 @@ pub async fn check(app: &AppHandle, cache: &Cache, fresh: bool) -> Result<Info, 
 /// On Windows the installer needs Pier closed, so this ends the process; the
 /// installer starts the new version when it is done.
 pub async fn install(app: &AppHandle) -> Result<(), String> {
-    let update = updater(app)?
+    // The plugin starts the installer and ends this process at once. Pier's
+    // children are in a job that kills them when Pier ends (wsl.rs), and the
+    // installer would be one of them: it was, in the first real run, and the
+    // update stopped half way with Pier closed. This runs just before the
+    // installer is started.
+    let update = app
+        .updater_builder()
+        .timeout(Duration::from_secs(20))
+        .on_before_exit(crate::wsl::let_the_installer_outlive_pier)
+        .build()
+        .map_err(|e| format!("Could not look for updates: {e}"))?
         .check()
         .await
         .map_err(|e| format!("Could not look for updates: {e}"))?

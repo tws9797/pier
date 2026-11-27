@@ -143,6 +143,15 @@ pub fn end_children_with_pier() {
     win::end_children_with_this_process();
 }
 
+/// Called just before Pier starts the installer of a newer version and ends:
+/// the installer has to outlive Pier, and a child born in the job would be
+/// killed with it. Everything already running still ends with Pier.
+/// Nothing else may be started after this.
+pub fn let_the_installer_outlive_pier() {
+    #[cfg(windows)]
+    win::let_new_children_outlive_this_process();
+}
+
 #[cfg(windows)]
 mod win {
     use std::ffi::c_void;
@@ -275,33 +284,55 @@ mod win {
         }
     }
 
+    const KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    const BREAKAWAY_OK: u32 = 0x0800; // lets the terminal Pier opens outlive it
+    const SILENT_BREAKAWAY_OK: u32 = 0x1000;
+
+    /// The job this process is in, once `end_children_with_this_process` has
+    /// made it.
+    static JOB: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+    fn set_job_limits(job: Handle, flags: u32) -> bool {
+        const EXTENDED_LIMIT_INFORMATION: i32 = 9;
+        unsafe {
+            let mut limits: ExtendedLimits = std::mem::zeroed();
+            limits.basic.limit_flags = flags;
+            SetInformationJobObject(
+                job,
+                EXTENDED_LIMIT_INFORMATION,
+                &limits as *const ExtendedLimits as *const c_void,
+                std::mem::size_of::<ExtendedLimits>() as u32,
+            ) != 0
+        }
+    }
+
     /// Puts this process in a job that kills everything in it when the job's
     /// last handle closes, which is when this process ends. Children are in
     /// the job from birth. The handle is deliberately never closed.
     pub fn end_children_with_this_process() {
-        const EXTENDED_LIMIT_INFORMATION: i32 = 9;
-        const KILL_ON_JOB_CLOSE: u32 = 0x2000;
-        const BREAKAWAY_OK: u32 = 0x0800; // lets the terminal Pier opens outlive it
         unsafe {
             let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
             if job.is_null() {
                 return;
             }
-            let mut limits: ExtendedLimits = std::mem::zeroed();
-            limits.basic.limit_flags = KILL_ON_JOB_CLOSE | BREAKAWAY_OK;
-            let set = SetInformationJobObject(
-                job,
-                EXTENDED_LIMIT_INFORMATION,
-                &limits as *const ExtendedLimits as *const c_void,
-                std::mem::size_of::<ExtendedLimits>() as u32,
-            );
-            if set == 0 || AssignProcessToJobObject(job, GetCurrentProcess()) == 0 {
+            if !set_job_limits(job, KILL_ON_JOB_CLOSE | BREAKAWAY_OK) || AssignProcessToJobObject(job, GetCurrentProcess()) == 0 {
                 CloseHandle(job);
+                return;
             }
+            JOB.store(job, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// From now on, processes this one starts are born outside the job and
+    /// so outlive it. Those already running stay in it and still end with
+    /// this process.
+    pub fn let_new_children_outlive_this_process() {
+        let job = JOB.load(std::sync::atomic::Ordering::SeqCst);
+        if !job.is_null() {
+            set_job_limits(job, KILL_ON_JOB_CLOSE | BREAKAWAY_OK | SILENT_BREAKAWAY_OK);
         }
     }
 }
-
 /// A raw byte stream to the Docker socket on its stdin/stdout.
 pub fn relay(distro: &str) -> std::io::Result<Session> {
     let mut cmd = if cfg!(windows) {

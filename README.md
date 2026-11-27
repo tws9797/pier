@@ -121,8 +121,10 @@ Things worth knowing:
   a dot on Settings if it names a newer version. Nothing is installed
   without a click. The installer must be signed with the key whose public
   half is in `tauri.conf.json`; the private half is not in the repository.
-  Versions before 0.1.6 do not look for updates and have to be upgraded by
-  hand once.
+  Versions before 0.1.6 do not look for updates, and 0.1.6 finds one but
+  cannot install it (its installer was killed along with Pier's other child
+  processes, which is why `update.rs` now lets it out of the job first), so
+  anything before 0.1.7 has to be upgraded by hand once.
 - "Pull image" pulls public images only: no registry credentials are sent.
   Stopping the request (Cancel, or closing the window) makes Docker abandon
   the pull.

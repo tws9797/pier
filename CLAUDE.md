@@ -35,6 +35,11 @@ When testing sleep with a hidden Pier, make sure the distro is up before
 Pier starts: started against a stopped distro it attaches to nothing and
 "holds 0 wsl.exe" then looks like sleep.
 
+Updating was run for real: a copy with a lower version number found the
+published release, installed it and came back up as the new version in 5 s.
+The first try (0.1.6) failed: the installer was a child of Pier, in the job
+that ends Pier's children with it, and died when Pier closed.
+
 Still only covered by unit tests with a stand-in backend (src-tauri/src/engine.rs):
 two real distros at once (switching, background keep-alive), a Docker that
 hangs. Clicking the tray icon was only simulated.
