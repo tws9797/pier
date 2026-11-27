@@ -1,5 +1,5 @@
 // Sample data so the UI can be worked on in a browser without Tauri or WSL.
-import type { Container, DockerContext, Image, Pull, PullProgress, Status, Volume, WslMemory } from "./api";
+import type { Container, DockerContext, Image, Pull, PullProgress, Status, UpdateInfo, Volume, WslMemory } from "./api";
 
 let engine = true;
 const now = Math.floor(Date.now() / 1000);
@@ -66,6 +66,7 @@ export const status = (): Promise<Status> =>
     keepRunning,
     startOnLogin,
     version: engine ? "29.8.2" : null,
+    appVersion: update.current,
     pipe: "\\\\.\\pipe\\pier_docker",
   });
 
@@ -242,6 +243,17 @@ export const setDockerContext = (pier: boolean) => {
     : { cli: true, current: context.previous ?? "default", active: false, previous: null };
   return wait(context);
 };
+
+/** A newer version is on offer; "installing" it takes a moment and then it is the current one. */
+let update: UpdateInfo = { current: "0.1.5", available: "0.1.6", notes: "Looks for updates by itself." };
+export const checkUpdate = () => new Promise<UpdateInfo>((r) => setTimeout(() => r(update), 600));
+export const installUpdate = () =>
+  new Promise<void>((r) =>
+    setTimeout(() => {
+      update = { current: update.available ?? update.current, available: null, notes: null };
+      r();
+    }, 1500),
+  );
 
 let memory: WslMemory = { limit: null, limitGb: null, totalGb: 32 };
 export const wslMemory = () => wait(memory);

@@ -16,6 +16,8 @@ export interface Status {
   /** The app starts, in the tray, when the user signs in to Windows. */
   startOnLogin: boolean;
   version: string | null;
+  /** Pier's own version. */
+  appVersion: string;
   pipe: string;
 }
 
@@ -274,6 +276,23 @@ export const dockerContext = () => (live ? invoke<DockerContext>("docker_context
 /** Points docker commands on Windows at Pier (`true`), or back at what they used before. */
 export const setDockerContext = (pier: boolean) =>
   live ? invoke<DockerContext>("set_docker_context", { pier }) : demo.setDockerContext(pier);
+
+export interface UpdateInfo {
+  /** The version of Pier that is running. */
+  current: string;
+  /** A newer released version, if there is one. */
+  available: string | null;
+  /** What its release says about it. */
+  notes: string | null;
+}
+/**
+ * Whether a newer Pier has been released. The backend asks GitHub at most
+ * once a day; `fresh` makes it ask now.
+ */
+export const checkUpdate = (fresh = false) =>
+  live ? invoke<UpdateInfo>("update_check", { fresh }) : demo.checkUpdate();
+/** Downloads and installs the newer version. Pier closes and is started again. */
+export const installUpdate = () => (live ? invoke<void>("update_install") : demo.installUpdate());
 
 /** The memory limit of WSL (all distros share it), from `.wslconfig`. */
 export interface WslMemory {

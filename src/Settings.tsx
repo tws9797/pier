@@ -65,8 +65,73 @@ function MemoryLimit({ onError }: { onError: (e: string) => void }) {
   );
 }
 
+/**
+ * Which version is running and whether a newer one is out. `update` is what
+ * the app found when the window opened (at most one look a day); the button
+ * looks again now.
+ */
+function Updates(props: {
+  /** The version that is running. */
+  version: string;
+  update: api.UpdateInfo | null;
+  onUpdate: (u: api.UpdateInfo) => void;
+  onError: (e: string) => void;
+}) {
+  const { update, onUpdate, onError } = props;
+  const [busy, setBusy] = useState<"checking" | "installing" | null>(null);
+  const [checked, setChecked] = useState(false);
+  const check = () => {
+    setBusy("checking");
+    api
+      .checkUpdate(true)
+      .then((u) => {
+        onUpdate(u);
+        setChecked(true);
+      }, (e) => onError(api.errorText(e)))
+      .finally(() => setBusy(null));
+  };
+  const install = () => {
+    setBusy("installing");
+    // On success Pier closes, so there is nothing to do afterwards.
+    api.installUpdate().catch((e) => {
+      onError(api.errorText(e));
+      setBusy(null);
+    });
+  };
+  return (
+    <section>
+      <h2>Updates</h2>
+      <p className="muted">
+        This is Pier {props.version}.{" "}
+        {update?.available
+          ? `Version ${update.available} is available.`
+          : checked
+            ? "It is the newest version."
+            : "Pier looks for a newer version on GitHub when this window opens, at most once a day."}
+      </p>
+      {update?.available ? (
+        <>
+          <button className="btn primary" disabled={busy !== null} onClick={install}>
+            {busy === "installing" ? "Installing…" : `Install ${update.available} and restart`}
+          </button>
+          <p className="muted note">
+            Pier closes while the update installs and starts again afterwards. If only Pier is keeping the distro awake,
+            WSL may shut it down in the meantime, which stops running containers.
+          </p>
+        </>
+      ) : (
+        <button className="btn" disabled={busy !== null} onClick={check}>
+          {busy === "checking" ? "Looking…" : "Look for updates now"}
+        </button>
+      )}
+    </section>
+  );
+}
+
 export function Settings(props: {
   status: Status | null;
+  update: api.UpdateInfo | null;
+  onUpdate: (u: api.UpdateInfo) => void;
   onChanged: () => void;
   onShutdown: () => void;
   onError: (e: string) => void;
@@ -224,6 +289,8 @@ export function Settings(props: {
             Stop engine and shut down distro
           </button>
         </section>
+
+        <Updates version={status.appVersion} update={props.update} onUpdate={props.onUpdate} onError={onError} />
       </div>
     </div>
   );

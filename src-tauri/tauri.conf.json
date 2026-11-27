@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Pier",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "identifier": "dev.pier.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -27,9 +27,16 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDNkYzNTU3NUEwRkU3RDQKUldUVTV3OWFWelZ2Yk1kWDE4QllMazVpa1BQRU83NmVJY2tubG44NTFYWWNCc2hkRFdxQysvci8K",
+      "endpoints": ["https://github.com/tws9797/pier/releases/latest/download/latest.json"]
+    }
+  },
   "bundle": {
     "active": true,
     "publisher": "Pier",
+    "createUpdaterArtifacts": true,
     "targets": [
       "nsis"
     ],

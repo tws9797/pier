@@ -117,6 +117,12 @@ export default function App() {
   const [visible, setVisible] = useState(document.visibilityState === "visible");
   useEffect(() => api.onVisibility(setVisible), []);
 
+  // Whether a newer Pier is out. Asked once per window; the backend asks
+  // GitHub at most once a day. Not being able to find out is not worth a
+  // message: Settings has a button that says why.
+  const [update, setUpdate] = useState<api.UpdateInfo | null>(null);
+  useEffect(() => void api.checkUpdate().then(setUpdate, () => {}), []);
+
   const [maximized, setMaximized] = useState(false);
   useEffect(() => api.onMaximizedChange(setMaximized), []);
 
@@ -228,6 +234,7 @@ export default function App() {
               <Icon name={n.icon} />
               <span>{n.label}</span>
               {up && n.count !== undefined && <span className="count">{n.count}</span>}
+              {n.id === "settings" && update?.available && <span className="dot update" title="An update is available" />}
             </button>
           ))}
         </nav>
@@ -248,7 +255,14 @@ export default function App() {
       <main className="main">
         <ErrorBoundary key={view}>
         {view === "settings" ? (
-          <Settings status={status} onChanged={refreshStatus} onShutdown={shutdownDistro} onError={setError} />
+          <Settings
+            status={status}
+            update={update}
+            onUpdate={setUpdate}
+            onChanged={refreshStatus}
+            onShutdown={shutdownDistro}
+            onError={setError}
+          />
         ) : !status ? null : !up ? (
           <Empty
             title={waking ? "Waking the Docker engine…" : status.distro ? "Docker engine is stopped" : "No WSL distro found"}

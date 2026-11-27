@@ -1,6 +1,6 @@
 [package]
 name = "pier"
-version = "0.1.5"
+version = "0.1.6"
 description = "A lightweight Docker manager for Windows + WSL2"
 authors = ["you"]
 edition = "2021"
@@ -22,6 +22,7 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
+tauri-plugin-updater = "2"
 
 [profile.release]
 codegen-units = 1

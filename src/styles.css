@@ -277,6 +277,14 @@ button:focus-visible {
   background: var(--amber);
   opacity: 1;
 }
+/* On the Settings entry of the sidebar: a newer version is out. */
+.nav-item .dot.update {
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  opacity: 1;
+}
 
 /* Rows */
 .group {
@@ -744,6 +752,7 @@ h2 {
 }
 .settings p code {
   font: 12px var(--mono);
+  white-space: nowrap;
   user-select: text;
 }
 select {

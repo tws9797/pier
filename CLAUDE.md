@@ -50,6 +50,15 @@ Prefer a real run to another review round.
 - `npm run dev`: UI in a browser on sample data from src/demo.ts
 - `npm run build`: type-check and build the frontend
 - `cargo check` in src-tauri: check the backend
+- `npm run tauri build -- --no-bundle`: the release program, no installer
+- `.\scripts\release.ps1`: the signed installer and `latest.json` for a
+  release. Publish both files with `gh release create`: installed copies
+  find a new version only through `latest.json`. The signing key is in
+  `%UserProfile%\.tauri\pier.key`, not in the repository; never print it,
+  commit it or send it anywhere.
+
+CI (`.github/workflows/ci.yml`) builds the frontend and runs `cargo test
+--lib` on Windows for every push to main and every pull request.
 
 Build and run from Windows (PowerShell), not from inside WSL: a build inside
 WSL produces a Linux app that cannot call `wsl.exe` the same way.

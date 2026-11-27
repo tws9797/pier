@@ -3,6 +3,7 @@ mod context;
 mod docker;
 mod engine;
 mod startup;
+mod update;
 mod wsl;
 mod wslconfig;
 
@@ -36,6 +37,8 @@ struct AppState {
     config_path: PathBuf,
     /// The app's name, which is also the name of its start-up entry.
     product: String,
+    /// See update.rs.
+    updates: update::Cache,
 }
 
 impl AppState {
@@ -123,6 +126,7 @@ mod tests {
             stats: tokio::sync::Mutex::new(None),
             config_path: PathBuf::from("unused"),
             product: "Pier".into(),
+            updates: update::Cache::default(),
         }
     }
 
@@ -363,6 +367,8 @@ struct Status {
     /// The app is set to start (in the tray) when the user signs in.
     start_on_login: bool,
     version: Option<String>,
+    /// Pier's own version.
+    app_version: &'static str,
     pipe: &'static str,
 }
 
@@ -484,6 +490,7 @@ async fn probe(state: &AppState) -> Result<Status, String> {
         keep_running: engine.keeps_running(),
         start_on_login: startup::enabled(&state.product),
         version,
+        app_version: env!("CARGO_PKG_VERSION"),
         pipe: bridge::PIPE_NAME,
     })
 }
@@ -792,6 +799,20 @@ async fn pull_image(
 /// How long Docker gets to answer a pull at all: it does so once it has
 /// heard from the registry, before any layer is fetched.
 const PULL_ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Whether a newer Pier has been released. Asks GitHub at most once a day
+/// unless `fresh` (the button in Settings).
+#[tauri::command]
+async fn update_check(app: AppHandle, state: State<'_, AppState>, fresh: bool) -> Result<update::Info, String> {
+    update::check(&app, &state.updates, fresh).await
+}
+
+/// Installs the newer release. Pier closes for it and is started again by
+/// the installer.
+#[tauri::command]
+async fn update_install(app: AppHandle) -> Result<(), String> {
+    update::install(&app).await
+}
 
 /// How much memory WSL may use (`.wslconfig`), and how much the PC has.
 #[tauri::command]
@@ -1201,6 +1222,7 @@ fn show_main(app: &AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Before anything is started: whatever Pier starts must end with it.
             wsl::end_children_with_pier();
@@ -1222,6 +1244,7 @@ pub fn run() {
                 stats: tokio::sync::Mutex::new(None),
                 config_path,
                 product: app.config().product_name.clone().unwrap_or_else(|| app.package_info().name.clone()),
+                updates: update::Cache::default(),
             });
 
             tauri::async_runtime::spawn(bridge::run(engine.clone()));
@@ -1301,7 +1324,9 @@ pub fn run() {
             docker_context,
             set_docker_context,
             wsl_memory,
-            set_wsl_memory
+            set_wsl_memory,
+            update_check,
+            update_install
         ])
         .build(tauri::generate_context!())
         .expect("error while running Pier")

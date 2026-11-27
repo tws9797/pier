@@ -19,8 +19,14 @@ brand in `src/App.tsx`.
 ```powershell
 npm install
 npm run tauri dev      # first build takes a few minutes
-npm run tauri build    # installer in src-tauri\target\release\bundle\nsis
+.\scripts\release.ps1  # signed installer and latest.json, for a release
 ```
+
+`npm run tauri build` needs the update signing key in
+`TAURI_SIGNING_PRIVATE_KEY` (the path of the key file); `release.ps1` sets
+it from `%UserProfile%\.tauri\pier.key`. `npm run tauri build -- --no-bundle`
+builds just the program and needs no key. A release must carry both the
+installer and `latest.json`, or installed copies will not find it.
 
 `npm run dev` alone opens the UI in a browser on sample data, which is the
 quickest way to work on the frontend.
@@ -110,6 +116,13 @@ Things worth knowing:
   and leaves the rest of the file alone. WSL reads it when its virtual
   machine starts, so a change applies once every distro has stopped; Pier
   does not run `wsl --shutdown` for you.
+- Updates (`src-tauri/src/update.rs`): when the window opens, at most once
+  a day, Pier asks GitHub for `latest.json` of the newest release, and shows
+  a dot on Settings if it names a newer version. Nothing is installed
+  without a click. The installer must be signed with the key whose public
+  half is in `tauri.conf.json`; the private half is not in the repository.
+  Versions before 0.1.6 do not look for updates and have to be upgraded by
+  hand once.
 - "Pull image" pulls public images only: no registry credentials are sent.
   Stopping the request (Cancel, or closing the window) makes Docker abandon
   the pull.
