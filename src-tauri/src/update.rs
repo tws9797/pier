@@ -10,6 +10,7 @@
 //! Nothing is ever installed without a click.
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
@@ -60,28 +61,83 @@ pub async fn check(app: &AppHandle, cache: &Cache, fresh: bool) -> Result<Info, 
     Ok(info)
 }
 
+/// How long the download of an installer may take.
+const DOWNLOAD: Duration = Duration::from_secs(120);
+
 /// Downloads the newer release, checks its signature and runs its installer.
-/// On Windows the installer needs Pier closed, so this ends the process; the
-/// installer starts the new version when it is done.
+/// The installer needs Pier closed, so this ends the process; the installer
+/// starts the new version when it is done.
+///
+/// The plugin's own `install` is not used. It starts the installer as an
+/// ordinary child, and Pier's children are in a job that ends them when Pier
+/// does (wsl.rs): in the first real run the installer died with Pier and the
+/// update stopped half way. `download` is the plugin's and is where the
+/// signature is checked.
 pub async fn install(app: &AppHandle) -> Result<(), String> {
-    // The plugin starts the installer and ends this process at once. Pier's
-    // children are in a job that kills them when Pier ends (wsl.rs), and the
-    // installer would be one of them: it was, in the first real run, and the
-    // update stopped half way with Pier closed. This runs just before the
-    // installer is started.
+    // One at a time, whatever the window does: its button comes back when
+    // the Settings page is left and opened again, and a second run would
+    // write the installer the first is about to start.
+    let _only = Installing::begin().ok_or("An update is already being installed")?;
+    download_and_start(app).await
+}
+
+/// Set while an update is being downloaded and its installer started.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Held by the one install that is running; lets the next one in when it
+/// ends, which it only does by failing.
+struct Installing;
+
+impl Installing {
+    fn begin() -> Option<Self> {
+        (!INSTALLING.swap(true, Ordering::SeqCst)).then_some(Self)
+    }
+}
+
+impl Drop for Installing {
+    fn drop(&mut self) {
+        INSTALLING.store(false, Ordering::SeqCst);
+    }
+}
+
+async fn download_and_start(app: &AppHandle) -> Result<(), String> {
     let update = app
         .updater_builder()
-        .timeout(Duration::from_secs(20))
-        .on_before_exit(crate::wsl::let_the_installer_outlive_pier)
+        .timeout(DOWNLOAD)
         .build()
         .map_err(|e| format!("Could not look for updates: {e}"))?
         .check()
         .await
         .map_err(|e| format!("Could not look for updates: {e}"))?
         .ok_or("There is no newer version to install")?;
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| format!("Could not install {}: {e}", update.version))?;
-    app.restart()
+    let failed = |e: String| format!("Could not install {}: {e}", update.version);
+    let bytes = update.download(|_, _| {}, || {}).await.map_err(|e| failed(e.to_string()))?;
+    update.verify(&bytes).map_err(|e| failed(e.to_string()))?;
+
+    let version: String = update.version.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')).collect();
+    let dir = std::env::temp_dir().join(format!("Pier-{version}-updater-{}", std::process::id()));
+    let installer = dir.join(format!("Pier-{version}-installer.exe"));
+    std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&installer, &bytes)).map_err(|e| failed(e.to_string()))?;
+    // /P: shows progress and asks nothing. /R: starts Pier again when done.
+    // /UPDATE: this replaces an installed copy. The new Pier starts with its
+    // window open, whatever this one was started with: the user is here.
+    crate::wsl::start_outliving_pier(&installer, &["/P", "/R", "/UPDATE"]).map_err(|e| failed(e.to_string()))?;
+    // Nothing is started after the installer, and ending now ends every
+    // wsl.exe of Pier's with it, through the job.
+    let _ = app;
+    std::process::exit(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_one_install_runs_at_a_time() {
+        let first = Installing::begin();
+        assert!(first.is_some());
+        assert!(Installing::begin().is_none(), "a second one while the first runs");
+        drop(first);
+        assert!(Installing::begin().is_some(), "after the first has failed");
+    }
 }

@@ -2819,7 +2819,7 @@ dependencies = [
 
 [[package]]
 name = "pier"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bytes",
  "http-body-util",

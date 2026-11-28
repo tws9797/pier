@@ -123,7 +123,7 @@ Things worth knowing:
   half is in `tauri.conf.json`; the private half is not in the repository.
   Versions before 0.1.6 do not look for updates, and 0.1.6 finds one but
   cannot install it (its installer was killed along with Pier's other child
-  processes, which is why `update.rs` now lets it out of the job first), so
+  processes, which is why `update.rs` starts the installer itself, outside the job), so
   anything before 0.1.7 has to be upgraded by hand once.
 - "Pull image" pulls public images only: no registry credentials are sent.
   Stopping the request (Cancel, or closing the window) makes Docker abandon

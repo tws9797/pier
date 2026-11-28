@@ -143,13 +143,20 @@ pub fn end_children_with_pier() {
     win::end_children_with_this_process();
 }
 
-/// Called just before Pier starts the installer of a newer version and ends:
-/// the installer has to outlive Pier, and a child born in the job would be
-/// killed with it. Everything already running still ends with Pier.
-/// Nothing else may be started after this.
-pub fn let_the_installer_outlive_pier() {
+/// Starts a program that is to outlive Pier: the installer of a newer
+/// version, which runs while Pier is closed. Only this one process is born
+/// outside the job. The job is not opened up for a moment instead, because a
+/// `wsl.exe` started by a timer in that moment would get out too and hold
+/// its distro awake with nobody left to end it.
+pub fn start_outliving_pier(program: &std::path::Path, args: &[&str]) -> std::io::Result<()> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
     #[cfg(windows)]
-    win::let_new_children_outlive_this_process();
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0100_0000); // CREATE_BREAKAWAY_FROM_JOB
+    }
+    cmd.spawn().map(|_| ())
 }
 
 #[cfg(windows)]
@@ -285,12 +292,9 @@ mod win {
     }
 
     const KILL_ON_JOB_CLOSE: u32 = 0x2000;
-    const BREAKAWAY_OK: u32 = 0x0800; // lets the terminal Pier opens outlive it
-    const SILENT_BREAKAWAY_OK: u32 = 0x1000;
-
-    /// The job this process is in, once `end_children_with_this_process` has
-    /// made it.
-    static JOB: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+    // Lets a process that asks for it be born outside the job: the terminal
+    // Pier opens and the installer of a newer version, which outlive it.
+    const BREAKAWAY_OK: u32 = 0x0800;
 
     fn set_job_limits(job: Handle, flags: u32) -> bool {
         const EXTENDED_LIMIT_INFORMATION: i32 = 9;
@@ -317,19 +321,7 @@ mod win {
             }
             if !set_job_limits(job, KILL_ON_JOB_CLOSE | BREAKAWAY_OK) || AssignProcessToJobObject(job, GetCurrentProcess()) == 0 {
                 CloseHandle(job);
-                return;
             }
-            JOB.store(job, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    /// From now on, processes this one starts are born outside the job and
-    /// so outlive it. Those already running stay in it and still end with
-    /// this process.
-    pub fn let_new_children_outlive_this_process() {
-        let job = JOB.load(std::sync::atomic::Ordering::SeqCst);
-        if !job.is_null() {
-            set_job_limits(job, KILL_ON_JOB_CLOSE | BREAKAWAY_OK | SILENT_BREAKAWAY_OK);
         }
     }
 }
